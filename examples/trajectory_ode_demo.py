@@ -38,6 +38,12 @@ device = torch.device('cuda:' + str(args.gpu) if torch.cuda.is_available() else 
 # t = torch.linspace(0., 25., args.data_size).to(device)
 # true_A = torch.tensor([[-0.1, 2.0], [-2.0, -0.1]]).to(device)
 
+# True dynamics
+# class Lambda(nn.Module):
+
+#     def forward(self, t, y):
+#         return torch.mm(y**3, true_A)
+
 def get_ruckig_traj(plot_trajectory=False):
 
     config = load_config(args.ruckig_config)
@@ -71,44 +77,6 @@ def get_ruckig_traj(plot_trajectory=False):
     print("t:", t.shape)
 
     return traj, t
-
-# True dynamics
-# class Lambda(nn.Module):
-
-#     def forward(self, t, y):
-#         return torch.mm(y**3, true_A)
-
-class Controller(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(4, 64),
-            nn.Tanh(),
-            nn.Linear(64, 64),
-            nn.Tanh(),
-            nn.Linear(64, 4)
-        )
-
-        # # Start near u = 0
-        # nn.init.zeros_(self.net[-1].weight)
-        # nn.init.zeros_(self.net[-1].bias)
-
-        self.A = torch.tensor([
-            [0., 1., 0.],
-            [0., 0., 1.],
-            [0., 0., 0.]
-        ]).to(device)
-
-        self.B = torch.tensor([
-            [0.],
-            [0.],
-            [1.]
-        ]).to(device)
-
-    def forward(self, t, x):
-        out = self.net(x)
-
-        return out
 
 
 with torch.no_grad():
@@ -266,6 +234,38 @@ class ODEFunc(nn.Module):
     def forward(self, t, y):
         return self.net(y**3)
 
+
+class Controller(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(4, 64),
+            nn.Tanh(),
+            nn.Linear(64, 64),
+            nn.Tanh(),
+            nn.Linear(64, 4)
+        )
+
+        # # Start near u = 0
+        # nn.init.zeros_(self.net[-1].weight)
+        # nn.init.zeros_(self.net[-1].bias)
+
+        self.A = torch.tensor([
+            [0., 1., 0.],
+            [0., 0., 1.],
+            [0., 0., 0.]
+        ]).to(device)
+
+        self.B = torch.tensor([
+            [0.],
+            [0.],
+            [1.]
+        ]).to(device)
+
+    def forward(self, t, x):
+        out = self.net(x)
+
+        return out
 
 class RunningAverageMeter(object):
     """Computes and stores the average and current value"""
