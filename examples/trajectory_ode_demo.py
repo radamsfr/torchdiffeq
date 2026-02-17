@@ -34,16 +34,6 @@ else:
 
 device = torch.device('cuda:' + str(args.gpu) if torch.cuda.is_available() else 'cpu')
 
-# Generate data
-# true_y0 = torch.tensor([[2., 0.]]).to(device)
-# t = torch.linspace(0., 25., args.data_size).to(device)
-# true_A = torch.tensor([[-0.1, 2.0], [-2.0, -0.1]]).to(device)
-
-# True dynamics
-# class Lambda(nn.Module):
-
-#     def forward(self, t, y):
-#         return torch.mm(y**3, true_A)
 
 def get_ruckig_traj(plot_trajectory=False):
 
@@ -81,12 +71,9 @@ def get_ruckig_traj(plot_trajectory=False):
 
 
 with torch.no_grad():
-    # true_y = odeint(Lambda(), true_y0, t, method='dopri5')
-    # true_y.shape (1000, 1, 2) (t, 1, d)
-    # true_y.type torch.tensor
-
     traj, t = get_ruckig_traj(False)
 
+    # traj.shape (t*dt, 1, d) d = (time, pos, vel, acc, jerk)
     # print("traj:", traj)
 
     true_y = torch.from_numpy(traj[:,1:4]).to(device).to(torch.float32)
@@ -95,13 +82,10 @@ with torch.no_grad():
     # print("true_y0", true_y0)
 
     t = torch.from_numpy(t).to(device)
-    # print("ruckig:", true_y.shape, type(true_y))
-    # traj.shape (t*dt, 1, d) d = (time, pos, vel, acc, jerk)
 
 
 def get_batch():
     # s is a randomly sampled time along the length of the gt traj
-    # s = torch.from_numpy(np.random.choice(np.arange(args.data_size - args.batch_time, dtype=np.int64), args.batch_size, replace=False))
     s = torch.from_numpy(np.random.choice(np.arange(len(t) - args.batch_time, dtype=np.int64), args.batch_size, replace=False))
 
     batch_y0 = true_y[s].to(torch.float32)  # (M, D)
@@ -308,9 +292,6 @@ class Controller(nn.Module):
         # ]).to(device)
 
     def forward(self, t, x):
-            # x shape: [batch, 3] -> (pos, vel, acc)
-            # print("x", x)
-
             pos = x[:, 0:1]
             acc = x[:, 2:3]
             vel = x[:, 1:2]
@@ -319,13 +300,12 @@ class Controller(nn.Module):
             # print("vel:", vel.shape)
             # print("acc:", acc.shape)
             
-            # Predict ONLY the jerk (the control input)
+            # Predict ONLY the jerk (control input)
             jerk = self.net(x)
 
             # print("jerk:", jerk)
             
             # Return the derivative of the state: [v, a, j]
-            # This is the "Triple Integrator" physics
             return torch.cat([vel, acc, jerk], dim=-1)
 
 class RunningAverageMeter(object):
@@ -389,7 +369,8 @@ if __name__ == '__main__':
                     "state_dict": func.state_dict(),
                 },
                 f"{args.save}/model.pt",
-            )
+                )
+
                 ii += 1
 
         end = time.time()
