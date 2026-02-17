@@ -24,6 +24,7 @@ parser.add_argument('--viz', action='store_true')
 parser.add_argument('--gpu', type=int, default=0)
 parser.add_argument('--adjoint', action='store_true')
 parser.add_argument('--ruckig_config', type=Path, default=DEFAULT_CONFIG_PATH)
+parser.add_argument("--save", type=str, default="model")
 args = parser.parse_args()
 
 if args.adjoint:
@@ -88,9 +89,11 @@ with torch.no_grad():
 
     # print("traj:", traj)
 
-    true_y = torch.from_numpy(traj).unsqueeze(1)
-    true_y = true_y[:,:,1:].to(device).to(torch.float32)
-    true_y0 = true_y[0,:,:].to(device).to(torch.float32)
+    true_y = torch.from_numpy(traj[:,1:4]).to(device).to(torch.float32)
+    true_y0 = true_y[0, :].to(device).to(torch.float32)
+
+    # print("true_y0", true_y0)
+
     t = torch.from_numpy(t).to(device)
     # print("ruckig:", true_y.shape, type(true_y))
     # traj.shape (t*dt, 1, d) d = (time, pos, vel, acc, jerk)
@@ -120,6 +123,9 @@ if args.viz:
     ax_phase = fig.add_subplot(132, frameon=False)
     ax_vecfield = fig.add_subplot(133, frameon=False)
     plt.show(block=False)
+
+if args.save:
+    makedirs('model')
 
 
 def visualize(true_y, pred_y, odefunc, itr):
@@ -169,11 +175,14 @@ def visualize(true_y, pred_y, odefunc, itr):
 
 def visualize_ruckig(true_y, pred_y, t, itr, show_plots=False):
 
+    print("true_y", true_y.shape)
+    print("pred_y", pred_y.shape)
+
     if not args.viz:
         return
 
     # Create a figure with 4 vertical subplots
-    fig, axes = plt.subplots(4, 1, figsize=(10, 12), sharex=True)
+    fig, axes = plt.subplots(3, 1, figsize=(10, 12), sharex=True)
     
     # Titles and data mapping
     titles = ['Position', 'Velocity', 'Acceleration', 'Jerk']
@@ -186,7 +195,10 @@ def visualize_ruckig(true_y, pred_y, t, itr, show_plots=False):
     true_np = true_y.squeeze().cpu().detach().numpy()
     pred_np = pred_y.squeeze().cpu().detach().numpy()
 
-    for i in range(4):
+    print("true_np", true_np.shape)
+    print("pred_np", pred_np.shape)
+
+    for i in range(3):
         ax = axes[i]
         ax.cla() # Clear current axis
         
@@ -215,6 +227,39 @@ def visualize_ruckig(true_y, pred_y, t, itr, show_plots=False):
     else:
         plt.close()
 
+def visualize_jerk(true_jerk, pred_jerk, t, itr, show_plots=False):
+    if not args.viz:
+        return
+
+    # Create a single plot
+    plt.figure(figsize=(10, 5))
+    
+    # Convert tensors to numpy
+    # Assuming shape (134, 1) or (134,)
+    t_np = t.cpu().numpy()
+    true_np = true_jerk.squeeze().cpu().detach().numpy()
+    pred_np = pred_jerk.squeeze().cpu().detach().numpy()
+
+    # Plotting
+    plt.plot(t_np, true_np, 'g-', label='True Jerk')
+    plt.plot(t_np, pred_np, 'b--', label='Predicted Jerk')
+
+    # Formatting
+    plt.title(f'Jerk Profile - Iteration: {itr:03d}', fontsize=14)
+    plt.xlabel('Time (t)')
+    plt.ylabel('Jerk ($m/s^3$)', fontweight='bold')
+    plt.grid(True, linestyle=':', alpha=0.6)
+    plt.legend(loc='upper right')
+    
+    plt.tight_layout()
+
+    # Save plot
+    plt.savefig('png/jerk_{:03d}.png'.format(itr))
+
+    if show_plots:
+        plt.draw()
+        plt.pause(0.001)
+
 class ODEFunc(nn.Module):
 
     def __init__(self):
@@ -239,33 +284,49 @@ class Controller(nn.Module):
     def __init__(self):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(4, 64),
+            nn.Linear(3, 64),
             nn.Tanh(),
             nn.Linear(64, 64),
             nn.Tanh(),
-            nn.Linear(64, 4)
+            nn.Linear(64, 1)
         )
 
         # # Start near u = 0
         # nn.init.zeros_(self.net[-1].weight)
         # nn.init.zeros_(self.net[-1].bias)
 
-        self.A = torch.tensor([
-            [0., 1., 0.],
-            [0., 0., 1.],
-            [0., 0., 0.]
-        ]).to(device)
+        # self.A = torch.tensor([
+        #     [0., 1., 0.],
+        #     [0., 0., 1.],
+        #     [0., 0., 0.]
+        # ]).to(device)
 
-        self.B = torch.tensor([
-            [0.],
-            [0.],
-            [1.]
-        ]).to(device)
+        # self.B = torch.tensor([
+        #     [0.],
+        #     [0.],
+        #     [1.]
+        # ]).to(device)
 
     def forward(self, t, x):
-        out = self.net(x)
+            # x shape: [batch, 3] -> (pos, vel, acc)
+            # print("x", x)
 
-        return out
+            pos = x[:, 0:1]
+            acc = x[:, 2:3]
+            vel = x[:, 1:2]
+
+            # print("pos:", pos.shape)
+            # print("vel:", vel.shape)
+            # print("acc:", acc.shape)
+            
+            # Predict ONLY the jerk (the control input)
+            jerk = self.net(x)
+
+            # print("jerk:", jerk)
+            
+            # Return the derivative of the state: [v, a, j]
+            # This is the "Triple Integrator" physics
+            return torch.cat([vel, acc, jerk], dim=-1)
 
 class RunningAverageMeter(object):
     """Computes and stores the average and current value"""
@@ -316,10 +377,19 @@ if __name__ == '__main__':
         # test/validation loss
         if itr % args.test_freq == 0:
             with torch.no_grad():
-                pred_y = odeint(func, true_y0, t).to(device)
+                test_y0 = true_y0.unsqueeze(0)
+                print("test_y0", test_y0.shape)
+                pred_y = odeint(func, test_y0, t).to(device)
                 loss = torch.mean(torch.abs(pred_y - true_y))
                 print('Iter {:04d} | Total Loss {:.6f}'.format(itr, loss.item()))
                 visualize_ruckig(true_y, pred_y, t, ii)
+
+                torch.save(
+                {
+                    "state_dict": func.state_dict(),
+                },
+                f"{args.save}/model.pt",
+            )
                 ii += 1
 
         end = time.time()
