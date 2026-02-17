@@ -211,38 +211,6 @@ def visualize_ruckig(true_y, pred_y, t, itr, show_plots=False):
     else:
         plt.close()
 
-def visualize_jerk(true_jerk, pred_jerk, t, itr, show_plots=False):
-    if not args.viz:
-        return
-
-    # Create a single plot
-    plt.figure(figsize=(10, 5))
-    
-    # Convert tensors to numpy
-    # Assuming shape (134, 1) or (134,)
-    t_np = t.cpu().numpy()
-    true_np = true_jerk.squeeze().cpu().detach().numpy()
-    pred_np = pred_jerk.squeeze().cpu().detach().numpy()
-
-    # Plotting
-    plt.plot(t_np, true_np, 'g-', label='True Jerk')
-    plt.plot(t_np, pred_np, 'b--', label='Predicted Jerk')
-
-    # Formatting
-    plt.title(f'Jerk Profile - Iteration: {itr:03d}', fontsize=14)
-    plt.xlabel('Time (t)')
-    plt.ylabel('Jerk ($m/s^3$)', fontweight='bold')
-    plt.grid(True, linestyle=':', alpha=0.6)
-    plt.legend(loc='upper right')
-    
-    plt.tight_layout()
-
-    # Save plot
-    plt.savefig('png/jerk_{:03d}.png'.format(itr))
-
-    if show_plots:
-        plt.draw()
-        plt.pause(0.001)
 
 class ODEFunc(nn.Module):
 
