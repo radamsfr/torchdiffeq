@@ -159,8 +159,8 @@ def visualize(true_y, pred_y, odefunc, itr):
 
 def visualize_ruckig(true_y, pred_y, t, itr, show_plots=False):
 
-    print("true_y", true_y.shape)
-    print("pred_y", pred_y.shape)
+    # print("true_y", true_y.shape)
+    # print("pred_y", pred_y.shape)
 
     if not args.viz:
         return
@@ -179,8 +179,8 @@ def visualize_ruckig(true_y, pred_y, t, itr, show_plots=False):
     true_np = true_y.squeeze().cpu().detach().numpy()
     pred_np = pred_y.squeeze().cpu().detach().numpy()
 
-    print("true_np", true_np.shape)
-    print("pred_np", pred_np.shape)
+    # print("true_np", true_np.shape)
+    # print("pred_np", pred_np.shape)
 
     for i in range(3):
         ax = axes[i]
@@ -334,7 +334,7 @@ if __name__ == '__main__':
     # func = ODEFunc().to(device)
     func = Controller().to(device)
     
-    optimizer = optim.RMSprop(func.parameters(), lr=1e-3)
+    optimizer = optim.RMSprop(func.parameters(), lr=1e-2)
     end = time.time()
 
     time_meter = RunningAverageMeter(0.97)
@@ -345,7 +345,7 @@ if __name__ == '__main__':
         print("iter:", itr)
         optimizer.zero_grad()
         batch_y0, batch_t, batch_y = get_batch()
-        print("batch", batch_y.shape)
+        # print("batch", batch_y.shape)
         pred_y = odeint(func, batch_y0, batch_t).to(device)
         loss = torch.mean(torch.abs(pred_y - batch_y))
         loss.backward()
