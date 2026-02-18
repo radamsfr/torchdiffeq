@@ -164,10 +164,6 @@ def visualize_ruckig(true_y, pred_y, t, itr, odefunc=None, show_plots=False):
     t_np = t.cpu().numpy()
     true_np = traj[:, 1:4]
     pred_np = pred_y.squeeze().cpu().detach().numpy()
-    
-    print("true", true_np.shape)
-    print("pred", pred_np.shape)
-    
     pred_y_squeezed = pred_y.squeeze(1) if pred_y.dim() == 3 else pred_y
 
     # Create a figure with 4 vertical subplots
@@ -182,9 +178,6 @@ def visualize_ruckig(true_y, pred_y, t, itr, odefunc=None, show_plots=False):
             # Get predicted jerk from the Controller's network
             pred_jerk_np = odefunc.net(pred_y_squeezed).cpu().numpy()
             true_jerk_np = traj[:, 4]
-            
-            print("true_j", true_jerk_np.shape)
-            print("pred_j", pred_jerk_np.shape) 
     else:
         pred_jerk_np = np.zeros((len(t_np), 1))
         true_jerk_np = np.zeros((len(t_np), 1))
