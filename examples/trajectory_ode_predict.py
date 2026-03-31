@@ -138,7 +138,7 @@ def visualize_ruckig_dual(true_y, pred_y, t, odefunc=None, show_plots=False):
     pred_np = pred_y.squeeze().cpu().detach().numpy()
     pred_y_squeezed = pred_y.squeeze(1) if pred_y.dim() == 3 else pred_y
 
-    line_thickness = 2.0
+    line_thickness = 3.0
     label_font_size = 16
     tick_font_size = 12
     label_spacing = 0
@@ -223,14 +223,14 @@ def visualize_ruckig_overlay(true_y, pred_y, t, odefunc=None, show_plots=False):
     pred_y_squeezed = pred_y.squeeze(1) if pred_y.dim() == 3 else pred_y
     pred_np = pred_y_squeezed.cpu().detach().numpy()
 
-    line_thickness = 2.0
-    label_font_size = 26
-    legend_font_size = 19
-    tick_font_size = 19
+    line_thickness = 3.0
+    label_font_size = 30
+    legend_font_size = 22
+    tick_font_size = 22
     label_spacing = 5 # Increased slightly for overlayed look
     
     # Back to 4 rows, 1 column
-    fig, axes = plt.subplots(4, 1, figsize=(10, 14), sharex=True)
+    fig, axes = plt.subplots(4, 1, figsize=(16, 14), sharex=True)
     
     titles = ['Position', 'Velocity', 'Acceleration', 'Jerk']
 
@@ -267,7 +267,7 @@ def visualize_ruckig_overlay(true_y, pred_y, t, odefunc=None, show_plots=False):
         
         # Styling
         ax.set_ylabel(titles[i], fontweight='semibold', fontsize=label_font_size, labelpad=label_spacing)
-        ax.grid(True, linestyle=':')
+        ax.grid(True, linestyle=':', linewidth=1.0)
 
         # Semibold ticks
         for label in ax.get_xticklabels() + ax.get_yticklabels():
@@ -276,7 +276,7 @@ def visualize_ruckig_overlay(true_y, pred_y, t, odefunc=None, show_plots=False):
             
         # Add legend to the first plot only to keep it clean, or all
         if i == 0:
-            ax.legend(loc='upper right', fontsize=legend_font_size, frameon=False)
+            ax.legend(fontsize=legend_font_size, frameon=False)
         
         if i == 3:
             ax.set_xlabel("Time (t)", fontsize=label_font_size, fontweight='semibold')
@@ -321,4 +321,4 @@ if __name__ == "__main__":
 
                 loss = torch.mean(torch.abs(pred_y - true_y))
                 print('Total Loss {:.6f}'.format(loss.item()))
-                visualize_ruckig_overlay(true_y, pred_y, t, odefunc=func, show_plots=False)
+                visualize_ruckig_dual(true_y, pred_y, t, odefunc=func, show_plots=False)
