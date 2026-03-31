@@ -40,9 +40,7 @@ device = torch.device('cuda:' + str(args.gpu) if torch.cuda.is_available() else 
 
 
 def get_ruckig_traj(plot_trajectory=False):
-
     config = load_config(args.ruckig_config)
-    
     rg = ruckig_generator(config)
 
     # Extract start and goal, vel and acc limits, dt from config
@@ -71,6 +69,20 @@ def get_ruckig_traj(plot_trajectory=False):
     print("traj:", traj.shape, type(traj))
     print("t:", t.shape)
 
+    return traj, t
+
+def get_random_ruckig_traj():
+    config = load_config(args.ruckig_config)
+    rg = ruckig_generator(config)
+
+    new_start = np.random.uniform(-1.0, 1.0, 3).tolist() # [pos, vel, acc]
+    new_goal = np.random.uniform(-1.0, 1.0, 3).tolist()
+    
+    # Inject these into the Ruckig input
+    inp = rg.build_ruckig_input(new_start, new_goal)
+    traj, t = rg.run_ruckig(inp)
+
+    # Returns (T, 5) where columns are [time, pos, vel, acc, jerk]
     return traj, t
 
 
