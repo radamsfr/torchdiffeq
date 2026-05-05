@@ -19,10 +19,10 @@ DEFAULT_SAVED_MODEL = Path(__file__).resolve().parents[1] / "models" / "model.pt
 parser = argparse.ArgumentParser('ODE demo')
 parser.add_argument('--method', type=str, choices=['dopri5', 'adams', 'rk4'], default='rk4')
 parser.add_argument('--data_size', type=int, default=1000)  # unused
-parser.add_argument('--batch_time', type=int, default=30)  # number of time points to sample for each batch (i.e. the length of the trajectory segment used for each training step)
-parser.add_argument('--batch_size', type=int, default=10)  # number of batches to sample for each training step (i.e. how many trajectory segments to sample for each training step)
+parser.add_argument('--batch_time', type=int, default=70)  # number of time points to sample for each batch (i.e. the length of the trajectory segment used for each training step)
+parser.add_argument('--batch_size', type=int, default=30)  # number of batches to sample for each training step (i.e. how many trajectory segments to sample for each training step)
 parser.add_argument('--niters', type=int, default=2000)  # number of iterations for training
-parser.add_argument('--curriculum_freq', type=int, default=100)  # frequency (in iterations) at which to increase the batch_time (i.e. the length of the trajectory segment used for training), as a form of curriculum learning.
+parser.add_argument('--curriculum_freq', type=int, default=20)  # frequency (in iterations) at which to increase the batch_time (i.e. the length of the trajectory segment used for training), as a form of curriculum learning.
 parser.add_argument('--test_freq', type=int, default=20)  # frequency (in iterations) at which to test the model and visualize the trajectory
 parser.add_argument('--viz', action='store_true')
 parser.add_argument('--gpu', type=int, default=0)
@@ -155,7 +155,10 @@ def visualize_ruckig(traj, pred_y, t, itr, odefunc=None, show_plots=False):
     if odefunc is not None:
         with torch.no_grad():
             # Get predicted jerk from the Controller's network
-            pred_jerk_np = odefunc.net(pred_y_squeezed).cpu().numpy()
+            raw_output = TrajectoryNODE.net(pred_y_squeezed)
+            jerk_normalized = torch.tanh(TrajectoryNODE.beta * raw_output)
+            pred_jerk_np = jerk_normalized.cpu().numpy() * 10.0  # TODO Get scale factor from config
+            # pred_jerk_np = odefunc.net(pred_y_squeezed).cpu().numpy() * 10.0
     else:
         pred_jerk_np = np.zeros((len(t_np), 1))  # If no odefunc provided, just plot zeros for predicted jerk
     
@@ -206,18 +209,22 @@ def get_batch(true_y, t, batch_length=None):
     max_start = max(0, num_timesteps - window_size)
     
     if max_start > 0:
-        s = torch.from_numpy(np.random.choice(np.arange(max_start, dtype=np.int64), args.batch_size, replace=True))
+        # Sample a single starting point 's' for the entire batch to keep time aligned
+        s_val = np.random.choice(np.arange(max_start, dtype=np.int64))
+        s = torch.ones(args.batch_size, dtype=torch.int64) * s_val
     else:
+        s_val = 0
         s = torch.zeros(args.batch_size, dtype=torch.int64)
-        
-    # print("s:", s.shape)
     
     # D - dimension of state (pos, vel, acc)
     # M - batch size (number of trajectory segments)
     # T - number of time points in each trajectory segment (window_size)
     
     batch_y0 = true_y[s].to(torch.float32)  # (M, D)
-    batch_t = t[:window_size].to(torch.float32)  # (T)
+    
+    # batch_t = t[:window_size].to(torch.float32)  # (T)
+    batch_t = t[s_val : s_val + window_size].to(torch.float32)  # (T)
+    
     batch_y = torch.stack([true_y[s + i] for i in range(window_size)], dim=0).to(torch.float32)  # (T, M, D)
 
     return batch_y0.to(device), batch_t.to(device), batch_y.to(device)
@@ -230,12 +237,18 @@ class Controller(nn.Module):
     def __init__(self):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(6, 64),
-            nn.ReLU(),
-            nn.Linear(64, 64),
-            nn.ReLU(),
-            nn.Linear(64, 1)
+            nn.Linear(6, 128),
+            nn.ELU(),
+            nn.Linear(128, 128),
+            nn.ELU(),
+            nn.Linear(128, 128),
+            nn.ELU(),
+            nn.Linear(128, 64),
+            nn.ELU(),
+            nn.Linear(64, 1),
+            nn.Tanh()
         )
+        self.beta = 2.0 # Sharpness factor
 
     def forward(self, t, x_aug):
         # x_aug contains both the current state and the goal state: [pos, vel, acc, final_pos, final_vel, final_acc]
@@ -246,8 +259,10 @@ class Controller(nn.Module):
         vel_goal = x_aug[:, 4:5]
         acc_goal = x_aug[:, 5:6]
         
-        jerk = self.net(x_aug)
+        raw_output = self.net(x_aug)
+        jerk_normalized = torch.tanh(self.beta * raw_output)
         
+        jerk = jerk_normalized * 10.0  # TODO Get scale factor from config
         # print("jerk:", jerk)
         
         djerk_goal = torch.zeros_like(acc_goal).to(torch.float32)
@@ -322,7 +337,7 @@ if __name__ == '__main__':
     buffer = 2.8
     
     # hyperparameters 
-    optimizer = optim.Adam(TrajectoryNODE.parameters(), lr=1e-2)
+    optimizer = optim.Adam(TrajectoryNODE.parameters(), lr=5e-4)
     iters = args.niters
     loss_tracking = []
     loss_meter = RunningAverageMeter(0.97)
@@ -352,21 +367,37 @@ if __name__ == '__main__':
         
         pred_y = odeint(TrajectoryNODE, batch_y0_aug, batch_t).to(device)
         # print("pred_y shape:", pred_y.shape)  # should be (T, M, 6)
-            
-        pred_jerk = TrajectoryNODE.net(pred_y)
+        
+        raw_output = TrajectoryNODE.net(pred_y)
+        jerk_normalized = torch.tanh(TrajectoryNODE.beta * raw_output)
+        pred_jerk = jerk_normalized * 10.0  # TODO Get scale factor from config
+        
+        # print("pred_jerk:", pred_jerk)
         
         # weighted loss
         pos_err_weight = 1.0
         vel_err_weight = 10.0
-        acc_err_weight = 100.0
-        jerk_err_weight = 500.0
+        acc_err_weight = 30.0
+        jerk_err_weight = 140.0
         
-        loss =  pos_err_weight * torch.mean((pred_y[:, :, 0] - batch_y[:, :, 0])**2) + \
+        trajectory_loss =  pos_err_weight * torch.mean((pred_y[:, :, 0] - batch_y[:, :, 0])**2) + \
                 vel_err_weight * torch.mean((pred_y[:, :, 1] - batch_y[:, :, 1])**2) + \
                 acc_err_weight * torch.mean((pred_y[:, :, 2] - batch_y[:, :, 2])**2) + \
                 jerk_err_weight * torch.mean((pred_jerk - batch_y[:, :, 3:4])**2)
+                
+        # Terminal loss (the error at the very last time step, index -1)
+        final_pos_err = torch.mean((pred_y[-1, :, 0] - batch_y[-1, :, 0])**2)
+        final_vel_err = torch.mean((pred_y[-1, :, 1] - batch_y[-1, :, 1])**2)
+        final_acc_err = torch.mean((pred_y[-1, :, 2] - batch_y[-1, :, 2])**2)
+
+        terminal_loss = 10.0 * (final_pos_err + final_vel_err + final_acc_err)
+
+        # Combined loss
+        loss = trajectory_loss + terminal_loss
     
         print("loss:", loss.item())
+        
+        torch.nn.utils.clip_grad_norm_(TrajectoryNODE.parameters(), max_norm=1.0)
         loss.backward()
         optimizer.step()
         
@@ -382,16 +413,28 @@ if __name__ == '__main__':
             
             with torch.no_grad():
                 pred_y_full = odeint(TrajectoryNODE, start_goal_aug, t).to(device)
-                pred_jerk_full = TrajectoryNODE.net(pred_y_full).to(device)
-                
                 # print("pred_y_full shape:", pred_y_full.shape)  # should be (T, 1, 6)
                 # print("true_y shape:", true_y.shape)  # should be (T, 4)
                 # print("pred_jerk_full shape:", pred_jerk_full.shape)  # should be (T, 1, 1)
                 
-                loss_full =  pos_err_weight * torch.mean((pred_y_full[:, 0, 0] - true_y[:, 0])**2) + \
-                            vel_err_weight * torch.mean((pred_y_full[:, 0, 1] - true_y[:, 1])**2) + \
-                            acc_err_weight * torch.mean((pred_y_full[:, 0, 2] - true_y[:, 2])**2) + \
-                            jerk_err_weight * torch.mean((pred_jerk_full[:, 0, 0] - true_y[:, 3])**2)
+                raw_output = TrajectoryNODE.net(pred_y_full)
+                jerk_normalized = torch.tanh(TrajectoryNODE.beta * raw_output)
+                pred_jerk_full = jerk_normalized * 10.0  # TODO Get scale factor from config
+                
+                trajectory_loss_full =  pos_err_weight * torch.mean((pred_y_full[:, 0, 0] - true_y[:, 0])**2) + \
+                                        vel_err_weight * torch.mean((pred_y_full[:, 0, 1] - true_y[:, 1])**2) + \
+                                        acc_err_weight * torch.mean((pred_y_full[:, 0, 2] - true_y[:, 2])**2) + \
+                                        jerk_err_weight * torch.mean((pred_jerk_full[:, 0, 0] - true_y[:, 3])**2)
+                            
+                # Terminal loss (the error at the very last time step, index -1)
+                final_pos_err_full = torch.mean((pred_y_full[-1, 0, 0] - true_y[-1, 0])**2)
+                final_vel_err_full = torch.mean((pred_y_full[-1, 0, 1] - true_y[-1, 1])**2)
+                final_acc_err_full = torch.mean((pred_y_full[-1, 0, 2] - true_y[-1, 2])**2)
+
+                terminal_loss_full = 10.0 * (final_pos_err_full + final_vel_err_full + final_acc_err_full)
+
+                # Combined loss
+                loss_full = trajectory_loss_full + terminal_loss_full
                 
                 print('Iter {:04d} | Batch Loss {:.6f} | Full Trajectory Loss {:.6f}'.format(itr, loss_meter.avg, loss_full.item()))
                 
@@ -408,10 +451,11 @@ if __name__ == '__main__':
                     )
                   
         # Curriculum learning  
-        if itr % args.curriculum_freq == 0:
-            args.batch_time += 10  # increase batch_time by 10 time steps every curriculum_freq iterations
-            print(f"Curriculum update: Increasing batch_time to {args.batch_time}")
-                
+        if loss_meter.avg < 3000 and args.batch_time < 1500: # Threshold for "mastery"
+            args.batch_time += 10
+            TrajectoryNODE.beta = min(15.0, TrajectoryNODE.beta + 2.0)
+            print("Mastered current length, increasing batch time to {}".format(args.batch_time))
+        
         end = time.time()
         
     plot_loss(loss_tracking)
