@@ -46,9 +46,18 @@ class ruckig_generator():
         return self.dt
         
 
-    def build_ruckig_input(self):
-        p0, v0, a0 = self.x0
-        pg, vg, ag = self.goal_cfg
+    def build_ruckig_input(self, start=None, goal=None):
+        if start is not None:
+            p0, v0, a0 = start
+        else:
+            p0, v0, a0 = self.x0
+            
+        if goal is not None:
+            pg, vg, ag = goal
+        else:
+            pg, vg, ag = self.goal_cfg
+            
+        
         limits = self.limits
 
         inp = InputParameter(1)   # 1 DoF triple integrator
