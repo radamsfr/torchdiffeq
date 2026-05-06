@@ -38,9 +38,7 @@ def get_ruckig_traj(start=None, goal=None, plot_trajectory=False):
     config = load_config(args.ruckig_config)
     rg = ruckig_generator(config)
 
-    if start is None:
-        start = rg.extract_start(config)
-    if goal is None:
+    if start is None or goal is None:
         start, goal = rg.extract_states(config)
 
     # print("Ruckig Start state:", start)
@@ -155,10 +153,7 @@ def visualize_ruckig(traj, pred_y, t, itr, odefunc=None, show_plots=False):
     if odefunc is not None:
         with torch.no_grad():
             # Get predicted jerk from the Controller's network
-            raw_output = TrajectoryNODE.net(pred_y_squeezed)
-            jerk_normalized = torch.tanh(TrajectoryNODE.beta * raw_output)
-            pred_jerk_np = jerk_normalized.cpu().numpy() * 10.0  # TODO Get scale factor from config
-            # pred_jerk_np = odefunc.net(pred_y_squeezed).cpu().numpy() * 10.0
+            pred_jerk_np = TrajectoryNODE.predict_jerk(pred_y_squeezed, multiplier=10.0).cpu().numpy()
     else:
         pred_jerk_np = np.zeros((len(t_np), 1))  # If no odefunc provided, just plot zeros for predicted jerk
     
@@ -233,6 +228,29 @@ def makedirs(dirname):
     if not os.path.exists(dirname):
         os.makedirs(dirname)
 
+def thresholded_tanh(x, threshold=0.5):
+    """
+    Applies a thresholded hyperbolic tangent function to the input tensor.
+    
+    Args:
+        x (Tensor): The input tensor.
+        threshold (float/Tensor): The width of the zero-segment in the middle.
+        
+    Returns:
+        Tensor: The activated tensor with a dead-zone of [-threshold, threshold].
+    """
+    # 1. Create a mask where values outside [-threshold, threshold] are True (1)
+    mask = (x > threshold) | (x < -threshold)
+    
+    # 2. Shift the inputs toward zero so they start smoothly right outside the threshold
+    #    (If x is positive, subtract threshold; if negative, add threshold)
+    shifted_x = torch.where(x > 0, x - threshold, x + threshold)
+    
+    # 3. Apply tanh and zero out the dead-zone
+    return torch.tanh(shifted_x) * mask.to(x.dtype)
+
+
+
 class Controller(nn.Module):
     def __init__(self):
         super().__init__()
@@ -246,7 +264,7 @@ class Controller(nn.Module):
             nn.Linear(128, 64),
             nn.ELU(),
             nn.Linear(64, 1),
-            nn.Tanh()
+            # nn.Tanh()
         )
         self.beta = 2.0 # Sharpness factor
 
@@ -259,15 +277,16 @@ class Controller(nn.Module):
         vel_goal = x_aug[:, 4:5]
         acc_goal = x_aug[:, 5:6]
         
-        raw_output = self.net(x_aug)
-        jerk_normalized = torch.tanh(self.beta * raw_output)
-        
-        jerk = jerk_normalized * 10.0  # TODO Get scale factor from config
+        jerk = self.predict_jerk(x_aug, multiplier=10.0)
         # print("jerk:", jerk)
-        
         djerk_goal = torch.zeros_like(acc_goal).to(torch.float32)
-
-        return torch.cat([vel_err, acc_err, jerk, vel_goal, acc_goal, djerk_goal], dim=-1)     
+        
+        return torch.cat([vel_err, acc_err, jerk, vel_goal, acc_goal, djerk_goal], dim=-1)   
+    
+    def predict_jerk(self, y, multiplier=1.0):
+        ode_output = self.net(y)
+        jerk_normalized = thresholded_tanh(self.beta * ode_output)
+        return jerk_normalized * multiplier  
 
 class RunningAverageMeter(object):
     """Computes and stores the average and current value"""
@@ -300,8 +319,8 @@ def plot_loss(loss_values):
     plt.legend()
     plt.show()
 
+
 if __name__ == '__main__':
-    
     # Set adjoint method for ODE integration
     if args.adjoint:
         from torchdiffeq import odeint_adjoint as odeint
@@ -350,6 +369,7 @@ if __name__ == '__main__':
         
         # generate random start and goal states within limits, with some buffer to avoid infeasible trajectories
         start, goal = random_start_goal_pair(limits, buffer)
+        # start, goal = config['system']['initial_state'], config['system']['goal_state']
                 
         # Get GT Ruckig trajectory
         traj, t = get_ruckig_traj(start=start, goal=goal, plot_trajectory=False)
@@ -368,10 +388,7 @@ if __name__ == '__main__':
         pred_y = odeint(TrajectoryNODE, batch_y0_aug, batch_t).to(device)
         # print("pred_y shape:", pred_y.shape)  # should be (T, M, 6)
         
-        raw_output = TrajectoryNODE.net(pred_y)
-        jerk_normalized = torch.tanh(TrajectoryNODE.beta * raw_output)
-        pred_jerk = jerk_normalized * 10.0  # TODO Get scale factor from config
-        
+        pred_jerk = TrajectoryNODE.predict_jerk(pred_y, multiplier=10.0)
         # print("pred_jerk:", pred_jerk)
         
         # weighted loss
@@ -386,9 +403,9 @@ if __name__ == '__main__':
                 jerk_err_weight * torch.mean((pred_jerk - batch_y[:, :, 3:4])**2)
                 
         # Terminal loss (the error at the very last time step, index -1)
-        final_pos_err = torch.mean((pred_y[-1, :, 0] - batch_y[-1, :, 0])**2)
-        final_vel_err = torch.mean((pred_y[-1, :, 1] - batch_y[-1, :, 1])**2)
-        final_acc_err = torch.mean((pred_y[-1, :, 2] - batch_y[-1, :, 2])**2)
+        final_pos_err = 100 * torch.mean((pred_y[-1, :, 0] - batch_y[-1, :, 0])**2)
+        final_vel_err = 100 * torch.mean((pred_y[-1, :, 1] - batch_y[-1, :, 1])**2)
+        final_acc_err = 100 * torch.mean((pred_y[-1, :, 2] - batch_y[-1, :, 2])**2)
 
         terminal_loss = 10.0 * (final_pos_err + final_vel_err + final_acc_err)
 
@@ -417,9 +434,7 @@ if __name__ == '__main__':
                 # print("true_y shape:", true_y.shape)  # should be (T, 4)
                 # print("pred_jerk_full shape:", pred_jerk_full.shape)  # should be (T, 1, 1)
                 
-                raw_output = TrajectoryNODE.net(pred_y_full)
-                jerk_normalized = torch.tanh(TrajectoryNODE.beta * raw_output)
-                pred_jerk_full = jerk_normalized * 10.0  # TODO Get scale factor from config
+                pred_jerk_full = TrajectoryNODE.predict_jerk(pred_y_full, multiplier=10.0)
                 
                 trajectory_loss_full =  pos_err_weight * torch.mean((pred_y_full[:, 0, 0] - true_y[:, 0])**2) + \
                                         vel_err_weight * torch.mean((pred_y_full[:, 0, 1] - true_y[:, 1])**2) + \
@@ -427,9 +442,9 @@ if __name__ == '__main__':
                                         jerk_err_weight * torch.mean((pred_jerk_full[:, 0, 0] - true_y[:, 3])**2)
                             
                 # Terminal loss (the error at the very last time step, index -1)
-                final_pos_err_full = torch.mean((pred_y_full[-1, 0, 0] - true_y[-1, 0])**2)
-                final_vel_err_full = torch.mean((pred_y_full[-1, 0, 1] - true_y[-1, 1])**2)
-                final_acc_err_full = torch.mean((pred_y_full[-1, 0, 2] - true_y[-1, 2])**2)
+                final_pos_err_full = 100 * torch.mean((pred_y_full[-1, 0, 0] - true_y[-1, 0])**2)
+                final_vel_err_full = 100 * torch.mean((pred_y_full[-1, 0, 1] - true_y[-1, 1])**2)
+                final_acc_err_full = 100 * torch.mean((pred_y_full[-1, 0, 2] - true_y[-1, 2])**2)
 
                 terminal_loss_full = 10.0 * (final_pos_err_full + final_vel_err_full + final_acc_err_full)
 
@@ -453,7 +468,7 @@ if __name__ == '__main__':
         # Curriculum learning  
         if loss_meter.avg < 3000 and args.batch_time < 1500: # Threshold for "mastery"
             args.batch_time += 10
-            TrajectoryNODE.beta = min(15.0, TrajectoryNODE.beta + 2.0)
+            # TrajectoryNODE.beta = min(15.0, TrajectoryNODE.beta + 2.0)
             print("Mastered current length, increasing batch time to {}".format(args.batch_time))
         
         end = time.time()
