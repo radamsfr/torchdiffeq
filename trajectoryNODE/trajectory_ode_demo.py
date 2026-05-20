@@ -289,7 +289,7 @@ class Controller(nn.Module):
     def predict_jerk(self, y, multiplier=1.0):
         ode_output = self.net(y)
         jerk_normalized = double_sigmoid(ode_output, sharpness=self.beta, dead_zone_width=0.5)
-        return jerk_normalized * multiplier  
+        return jerk_normalized * multiplier
 
 class RunningAverageMeter(object):
     """Computes and stores the average and current value"""
