@@ -272,19 +272,20 @@ class Controller(nn.Module):
 
     def forward(self, t, x_aug):
         # x_aug contains both the current state and the goal state: [pos, vel, acc, final_pos, final_vel, final_acc]
-        pos_err = x_aug[:, 0:1]
-        vel_err = x_aug[:, 1:2]
-        acc_err = x_aug[:, 2:3]
+        pos = x_aug[:, 0:1]
+        vel = x_aug[:, 1:2]
+        acc = x_aug[:, 2:3]
         pos_goal = x_aug[:, 3:4]
         vel_goal = x_aug[:, 4:5]
         acc_goal = x_aug[:, 5:6]
         
         # jerk = self.predict_jerk(x_aug, multiplier=10.0)
         ode_output = self.net(x_aug)
+        jerk = double_sigmoid(ode_output, sharpness=self.beta, dead_zone_width=0.5) * 10.0
         # print("jerk:", jerk)
         djerk_goal = torch.zeros_like(acc_goal).to(torch.float32)
         
-        return torch.cat([vel_err, acc_err, ode_output, vel_goal, acc_goal, djerk_goal], dim=-1)   
+        return torch.cat([vel, acc, jerk, vel_goal, acc_goal, djerk_goal], dim=-1)   
     
     def predict_jerk(self, y, multiplier=1.0):
         ode_output = self.net(y)
