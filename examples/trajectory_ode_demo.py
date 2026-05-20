@@ -20,7 +20,7 @@ parser = argparse.ArgumentParser('ODE demo')
 parser.add_argument('--method', type=str, choices=['dopri5', 'adams', 'rk4'], default='rk4')
 parser.add_argument('--data_size', type=int, default=1000)  # unused
 parser.add_argument('--batch_time', type=int, default=70)  # number of time points to sample for each batch (i.e. the length of the trajectory segment used for each training step)
-parser.add_argument('--batch_size', type=int, default=30)  # number of batches to sample for each training step (i.e. how many trajectory segments to sample for each training step)
+parser.add_argument('--batch_size', type=int, default=20)  # number of batches to sample for each training step (i.e. how many trajectory segments to sample for each training step)
 parser.add_argument('--niters', type=int, default=2000)  # number of iterations for training
 parser.add_argument('--curriculum_freq', type=int, default=20)  # frequency (in iterations) at which to increase the batch_time (i.e. the length of the trajectory segment used for training), as a form of curriculum learning.
 parser.add_argument('--test_freq', type=int, default=20)  # frequency (in iterations) at which to test the model and visualize the trajectory
@@ -249,7 +249,10 @@ def thresholded_tanh(x, threshold=0.5):
     # 3. Apply tanh and zero out the dead-zone
     return torch.tanh(shifted_x) * mask.to(x.dtype)
 
-
+def double_sigmoid(x, sharpness = 2.0, dead_zone_width=1):
+    w = dead_zone_width
+    b = sharpness
+    return 0.5 * (torch.tanh(b * (x - w)) + torch.tanh(b * (x + w)))
 
 class Controller(nn.Module):
     def __init__(self):
@@ -264,9 +267,8 @@ class Controller(nn.Module):
             nn.Linear(128, 64),
             nn.ELU(),
             nn.Linear(64, 1),
-            # nn.Tanh()
         )
-        self.beta = 2.0 # Sharpness factor
+        self.beta = 12.0 # Sharpness factor
 
     def forward(self, t, x_aug):
         # x_aug contains both the current state and the goal state: [pos, vel, acc, final_pos, final_vel, final_acc]
@@ -277,15 +279,16 @@ class Controller(nn.Module):
         vel_goal = x_aug[:, 4:5]
         acc_goal = x_aug[:, 5:6]
         
-        jerk = self.predict_jerk(x_aug, multiplier=10.0)
+        # jerk = self.predict_jerk(x_aug, multiplier=10.0)
+        ode_output = self.net(x_aug)
         # print("jerk:", jerk)
         djerk_goal = torch.zeros_like(acc_goal).to(torch.float32)
         
-        return torch.cat([vel_err, acc_err, jerk, vel_goal, acc_goal, djerk_goal], dim=-1)   
+        return torch.cat([vel_err, acc_err, ode_output, vel_goal, acc_goal, djerk_goal], dim=-1)   
     
     def predict_jerk(self, y, multiplier=1.0):
         ode_output = self.net(y)
-        jerk_normalized = thresholded_tanh(self.beta * ode_output)
+        jerk_normalized = double_sigmoid(ode_output, sharpness=self.beta, dead_zone_width=0.5)
         return jerk_normalized * multiplier  
 
 class RunningAverageMeter(object):
@@ -356,7 +359,7 @@ if __name__ == '__main__':
     buffer = 2.8
     
     # hyperparameters 
-    optimizer = optim.Adam(TrajectoryNODE.parameters(), lr=5e-4)
+    optimizer = optim.Adam(TrajectoryNODE.parameters(), lr=1e-4)
     iters = args.niters
     loss_tracking = []
     loss_meter = RunningAverageMeter(0.97)
@@ -388,7 +391,9 @@ if __name__ == '__main__':
         pred_y = odeint(TrajectoryNODE, batch_y0_aug, batch_t).to(device)
         # print("pred_y shape:", pred_y.shape)  # should be (T, M, 6)
         
-        pred_jerk = TrajectoryNODE.predict_jerk(pred_y, multiplier=10.0)
+        
+        ode_output = TrajectoryNODE.net(pred_y)
+        pred_jerk_clamped = TrajectoryNODE.predict_jerk(pred_y, multiplier=10.0)
         # print("pred_jerk:", pred_jerk)
         
         # weighted loss
@@ -400,7 +405,7 @@ if __name__ == '__main__':
         trajectory_loss =  pos_err_weight * torch.mean((pred_y[:, :, 0] - batch_y[:, :, 0])**2) + \
                 vel_err_weight * torch.mean((pred_y[:, :, 1] - batch_y[:, :, 1])**2) + \
                 acc_err_weight * torch.mean((pred_y[:, :, 2] - batch_y[:, :, 2])**2) + \
-                jerk_err_weight * torch.mean((pred_jerk - batch_y[:, :, 3:4])**2)
+                jerk_err_weight * torch.mean((ode_output - batch_y[:, :, 3:4])**2)
                 
         # Terminal loss (the error at the very last time step, index -1)
         final_pos_err = 100 * torch.mean((pred_y[-1, :, 0] - batch_y[-1, :, 0])**2)
@@ -412,7 +417,8 @@ if __name__ == '__main__':
         # Combined loss
         loss = trajectory_loss + terminal_loss
     
-        print("loss:", loss.item())
+        print("avg loss:", loss_meter.avg)
+        print("batch_time: ", args.batch_time)
         
         torch.nn.utils.clip_grad_norm_(TrajectoryNODE.parameters(), max_norm=1.0)
         loss.backward()
@@ -434,12 +440,13 @@ if __name__ == '__main__':
                 # print("true_y shape:", true_y.shape)  # should be (T, 4)
                 # print("pred_jerk_full shape:", pred_jerk_full.shape)  # should be (T, 1, 1)
                 
+                ode_output_full = TrajectoryNODE.net(pred_y_full)
                 pred_jerk_full = TrajectoryNODE.predict_jerk(pred_y_full, multiplier=10.0)
                 
                 trajectory_loss_full =  pos_err_weight * torch.mean((pred_y_full[:, 0, 0] - true_y[:, 0])**2) + \
                                         vel_err_weight * torch.mean((pred_y_full[:, 0, 1] - true_y[:, 1])**2) + \
                                         acc_err_weight * torch.mean((pred_y_full[:, 0, 2] - true_y[:, 2])**2) + \
-                                        jerk_err_weight * torch.mean((pred_jerk_full[:, 0, 0] - true_y[:, 3])**2)
+                                        jerk_err_weight * torch.mean((ode_output_full[:, 0, 0] - true_y[:, 3])**2)
                             
                 # Terminal loss (the error at the very last time step, index -1)
                 final_pos_err_full = 100 * torch.mean((pred_y_full[-1, 0, 0] - true_y[-1, 0])**2)
@@ -465,11 +472,12 @@ if __name__ == '__main__':
                     f"{args.save}/model.pt",
                     )
                   
-        # Curriculum learning  
-        if loss_meter.avg < 3000 and args.batch_time < 1500: # Threshold for "mastery"
-            args.batch_time += 10
-            # TrajectoryNODE.beta = min(15.0, TrajectoryNODE.beta + 2.0)
-            print("Mastered current length, increasing batch time to {}".format(args.batch_time))
+        # # Curriculum learning  
+        if loss_meter.avg < 6000 and args.batch_time < 1500: # Threshold for "mastery"
+            args.batch_time += 50
+            TrajectoryNODE.beta = min(30.0, TrajectoryNODE.beta + 2.0)
+            print("Mastered current length, increasing batch time to {} and beta to {}".format(args.batch_time, TrajectoryNODE.beta))
+            
         
         end = time.time()
         
