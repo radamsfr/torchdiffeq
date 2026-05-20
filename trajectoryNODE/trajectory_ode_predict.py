@@ -11,7 +11,7 @@ import torch.nn as nn
 import torch.optim as optim
 
 import ruckig
-from ruckig_generator import ruckig_generator, parse_args, load_config
+from trajectoryNODE.ruckig_generator import ruckig_generator, parse_args, load_config
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "triple_integrator.json"
 DEFAULT_SAVED_MODEL = Path(__file__).resolve().parents[1] / "models" / "model.pt"
@@ -321,4 +321,4 @@ if __name__ == "__main__":
 
                 loss = torch.mean(torch.abs(pred_y - true_y))
                 print('Total Loss {:.6f}'.format(loss.item()))
-                visualize_ruckig_dual(true_y, pred_y, t, odefunc=func, show_plots=False)
+                visualize_ruckig_overlay(true_y, pred_y, t, odefunc=func, show_plots=False)
